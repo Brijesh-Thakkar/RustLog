@@ -1,34 +1,4 @@
 //! RustLog Consumer Demo
-//!
-//! This is a reference implementation showing how to consume messages from RustLog.
-//!
-//! ## Usage
-//!
-//! ### Offset-based consumer (default)
-//! ```bash
-//! cargo run --example consumer
-//! ```
-//! Fetches from offset 0, prints all records.
-//!
-//! ### Consumer group mode
-//! ```bash
-//! cargo run --example consumer -- --group analytics
-//! ```
-//! Fetches using committed offset for group "analytics".
-//! If no committed offset exists, starts from offset 0.
-//! Commits next_offset after successful fetch.
-//!
-//! ## Protocol used
-//! - Binary framing (4-byte length prefix)
-//! - Fetch request (0x02) with optional group_id
-//! - OffsetFetch request (0x04) to check committed offset
-//! - OffsetCommit request (0x03) to commit after processing
-//!
-//! ## Consumer group semantics
-//! - Offsets are consumer-owned (explicit commit required)
-//! - No auto-commit
-//! - Broker tracks committed offset per (group, topic, partition)
-//! - Fetch with group_id uses max(committed_offset, requested_offset)
 
 use kafka_lite::protocol::{frame, request::Request, response::Response};
 use tokio::net::TcpStream;
@@ -38,32 +8,27 @@ async fn main() -> anyhow::Result<()> {
     println!("RustLog Consumer Demo");
     println!("=====================\n");
 
-    // Parse CLI arguments
     let args: Vec<String> = std::env::args().collect();
     let group_id = parse_group_arg(&args);
 
-    // Connect to broker
     println!("Connecting to broker at 127.0.0.1:9092...");
     let mut stream = TcpStream::connect("127.0.0.1:9092").await?;
     println!("Connected\n");
 
-    // Configuration
     let topic = "demo";
     let partition = 0;
-    let max_bytes = 1024 * 1024; // 1MB
+    let max_bytes = 1024 * 1024;
 
-    // Determine starting offset
     let start_offset = if let Some(group) = &group_id {
         println!("Consumer group: {}", group);
         get_committed_offset(&mut stream, group, topic, partition).await?
     } else {
         println!("Offset-based consumer (no group)");
-        0 // Default to offset 0
+        0
     };
 
     println!("Starting offset: {}\n", start_offset);
 
-    // Fetch records
     println!("Fetching from topic '{}', partition {}...", topic, partition);
     let request = Request::Fetch {
         group_id: group_id.clone().unwrap_or_default(),
@@ -79,7 +44,6 @@ async fn main() -> anyhow::Result<()> {
     let response_bytes = frame::read_frame(&mut stream).await?;
     let response = Response::decode(&response_bytes)?;
 
-    // Handle fetch response
     match response {
         Response::FetchResponse {
             records,
@@ -100,7 +64,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Commit offset if using consumer group
             if let Some(group) = &group_id {
                 println!("\nCommitting offset {} for group '{}'...", next_offset, group);
                 commit_offset(&mut stream, group, topic, partition, next_offset).await?;
@@ -123,9 +86,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Parse --group argument from CLI
 fn parse_group_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1); // Skip program name
+    let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if arg == "--group" {
             return iter.next().cloned();
@@ -134,11 +96,6 @@ fn parse_group_arg(args: &[String]) -> Option<String> {
     None
 }
 
-/// Fetch committed offset for a consumer group
-///
-/// Returns:
-/// - Committed offset if it exists
-/// - 0 if no committed offset found
 async fn get_committed_offset(
     stream: &mut TcpStream,
     group: &str,
@@ -180,7 +137,6 @@ async fn get_committed_offset(
     }
 }
 
-/// Commit offset for a consumer group
 async fn commit_offset(
     stream: &mut TcpStream,
     group: &str,

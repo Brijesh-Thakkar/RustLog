@@ -16,12 +16,12 @@ RustLog demonstrates:
 - Index-based offset lookup
 
 RustLog intentionally omits:
-- ❌ Replication and clustering
-- ❌ Persistent offset storage (in-memory only)
-- ❌ Log retention or compaction
-- ❌ Authentication and authorization
-- ❌ Exactly-once semantics
-- ❌ Consumer rebalancing
+- Replication and clustering
+- Persistent offset storage (in-memory only)
+- Log retention or compaction
+- Authentication and authorization
+- Exactly-once semantics
+- Consumer rebalancing
 
 **Use this to learn. Not for production.**
 
@@ -53,7 +53,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed design.
 
 ```bash
 # Clone the repository
-cd Kafka-lite
+cd RustLog
 
 # Build in release mode
 cargo build --release
@@ -79,7 +79,7 @@ Output:
 ```
 ╔═══════════════════════════════════════╗
 ║        RustLog Broker v0.1.0          ║
-║     Kafka-lite Distributed Log        ║
+║      Distributed Log System           ║
 ╚═══════════════════════════════════════╝
 
 Broker started on 127.0.0.1:9092
@@ -267,7 +267,7 @@ See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for detailed analysis.
 ## Project Structure
 
 ```
-Kafka-lite/
+RustLog/
 ├── src/
 │   ├── lib.rs              # Library entry point
 │   ├── main.rs             # Broker executable
@@ -315,16 +315,16 @@ RustLog prioritizes **clarity and correctness over features**:
 
 | Feature | Kafka | RustLog |
 |---------|-------|---------|
-| Replication | ✅ Multi-replica with ISR | ❌ Single copy only |
-| Clustering | ✅ Multi-broker with ZooKeeper/KRaft | ❌ Single broker |
-| Offset Storage | ✅ Durable (internal topic) | ❌ In-memory only |
-| Retention | ✅ Time/size-based deletion | ❌ Manual management |
-| Compaction | ✅ Log compaction | ❌ Not implemented |
-| Security | ✅ SASL, SSL, ACLs | ❌ No security |
-| Protocol | ✅ Kafka wire protocol | ❌ Custom binary protocol |
-| Transactions | ✅ Exactly-once semantics | ❌ At-least-once only |
-| Zero-copy | ✅ sendfile() syscall | ✅ mmap for reads |
-| Consumer Groups | ✅ With rebalancing | ✅ Without rebalancing |
+| Replication | Multi-replica with ISR | Single copy only |
+| Clustering | Multi-broker with ZooKeeper/KRaft | Single broker |
+| Offset Storage | Durable (internal topic) | In-memory only |
+| Retention | Time/size-based deletion | Manual management |
+| Compaction | Log compaction | Not implemented |
+| Security | SASL, SSL, ACLs | No security |
+| Protocol | Kafka wire protocol | Custom binary protocol |
+| Transactions | Exactly-once semantics | At-least-once only |
+| Zero-copy | sendfile() syscall | mmap for reads |
+| Consumer Groups | With rebalancing | Without rebalancing |
 
 **RustLog is NOT a Kafka replacement. It's a learning tool and reference implementation.**
 
@@ -350,4 +350,4 @@ Implementation references:
 
 ---
 
-**Built with Rust 🦀 for learning and exploration.**
+**Built with Rust for learning and exploration.**
