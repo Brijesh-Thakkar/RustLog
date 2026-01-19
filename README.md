@@ -1,353 +1,163 @@
 # RustLog
 
-**A Kafka-inspired append-only log broker for learning distributed systems.**
+## Project Overview
 
-RustLog is a single-node message broker implementing core Kafka concepts: append-only logs, consumer groups, pull-based fetching, and consumer-owned offsets. It is designed for backend engineers and distributed systems learners who want to understand log storage internals without the operational complexity of a production Kafka cluster.
+RustLog is a single-node, log-structured message broker that demonstrates fundamental distributed systems concepts through intentional design constraints. It implements core message broker semantics—append-only logs, pull-based consumption, and consumer group isolation—while eliminating distributed coordination complexity.
 
-## Project Scope
+RustLog explores the tradeoffs between **correctness and performance**, **simplicity and features**, and **determinism and optimization**. It serves as a reference implementation for understanding log-structured storage, crash recovery mechanisms, and stateless protocol design.
 
-**This is an educational project, not production software.**
-
-RustLog demonstrates:
-- Append-only segment-based storage
-- Consumer group offset tracking
-- Binary TCP protocol with framing
-- Memory-mapped reads for sealed segments
-- Index-based offset lookup
-
-RustLog intentionally omits:
-- Replication and clustering
-- Persistent offset storage (in-memory only)
-- Log retention or compaction
-- Authentication and authorization
-- Exactly-once semantics
-- Consumer rebalancing
-
-**Use this to learn. Not for production.**
-
-## Architecture
-
-RustLog follows a layered design:
-
-**Broker Layer**
-- Stateless TCP connections (one task per connection)
-- Request routing (Produce, Fetch, OffsetCommit, OffsetFetch)
-- Partition registry (topic + partition → Partition instance)
-- Offset manager (in-memory consumer group offsets)
-
-**Storage Layer**
-- Active segment: writable, uses File I/O
-- Sealed segments: read-only, uses mmap for zero-copy reads
-- Index files: sparse offset → byte position mapping
-- Partition: orchestrates reads across multiple segments
-
-**Protocol**
-- Binary TCP with 4-byte length-prefixed frames
-- No Kafka wire format compatibility
-- Request/response model (no streaming)
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed design.
-- Linux, macOS, or WSL (mmap implementation)
-
-### Build
-
-```bash
-# Clone the repository
-cd RustLog
-
-# Build in release mode
-cargo build --release
-
-# Run tests
-cargo test
-
-# Run benchmarks
-cargo bench
-```
-
-### Run the Broker
-
-```bash
-# Build release binary
-cargo build --release
-
-# Run broker (listens on 127.0.0.1:9092)
-cargo run --release
-```
-
-Output:
-```
-╔═══════════════════════════════════════╗
-║        RustLog Broker v0.1.0          ║
-║      Distributed Log System           ║
-╚═══════════════════════════════════════╝
-
-Broker started on 127.0.0.1:9092
-```
-
-### Demo: Producer
-
-In a new terminal, run the producer example:
-
-```bash
-cargo run --example producer
-```
-
-This produces 3 messages (`["hello", "from", "rustlog"]`) to topic `demo`, partition 0.
-
-**Expected output:**
-```
-RustLog Producer Demo
-=====================
-
-Connecting to broker at 127.0.0.1:9092...
-Connected
-
-Producing 3 messages to topic 'demo', partition 0...
-
-Production successful!
-Base offset: 0
-Records written: 3
-
-  Offset 0: hello
-  Offset 1: from
-  Offset 2: rustlog
-
-Done
-```
-
-### Demo: Consumer (Offset-Based)
-
-Run the consumer in offset-based mode (default):
-
-```bash
-cargo run --example consumer
-```
-
-This fetches from offset 0 without consumer group tracking.
-
-**Expected output:**
-```
-RustLog Consumer Demo
-=====================
-
-Connecting to broker at 127.0.0.1:9092...
-Connected
-
-Offset-based consumer (no group)
-Starting offset: 0
-
-Fetching from topic 'demo', partition 0...
-
-Fetch successful!
-Records fetched: 3
-Next offset: 3
-
-Records:
-  Offset 0: hello
-  Offset 1: from
-  Offset 2: rustlog
-
-Done
-```
-
-### Demo: Consumer (Consumer Group)
-
-Run the consumer with a consumer group:
-
-```bash
-cargo run --example consumer -- --group analytics
-```
-
-This uses consumer group `analytics` to track committed offsets.
-
-**First run (no committed offset):**
-```
-RustLog Consumer Demo
-=====================
-
-Connecting to broker at 127.0.0.1:9092...
-Connected
-
-Consumer group: analytics
-No committed offset found, starting from 0
-Starting offset: 0
-
-Fetching from topic 'demo', partition 0...
-
-Fetch successful!
-Records fetched: 3
-Next offset: 3
-
-Records:
-  Offset 0: hello
-  Offset 1: from
-  Offset 2: rustlog
-
-Committing offset 3 for group 'analytics'...
-Committed
-
-Done
-```
-
-**Second run (resumes from committed offset):**
-```
-Consumer group: analytics
-Found committed offset: 3
-Starting offset: 3
-
-Fetching from topic 'demo', partition 0...
-
-Fetch successful!
-Records fetched: 0
-Next offset: 3
-
-No records available at offset 3
-```
-
-### Consumer Offset Management
-
-RustLog uses **consumer-owned offsets** (Kafka model):
-
-- Offsets are **explicitly committed** by consumer
-- No auto-commit behavior
-- Broker stores offsets in-memory per `(group, topic, partition)`
-- Fetch with `group_id` uses `max(committed_offset, requested_offset)`
-- **Offsets lost on broker restart** (in-memory only)
-
-See [docs/OFFSETS.md](docs/OFFSETS.md) for implementation details.
-
-## Testing
-
-```bash
-# Run all tests (unit + integration)
-cargo test
-
-# Run only integration tests
-cargo test --test integration_test
-
-# Run with output
-cargo test -- --nocapture
-
-# Run specific test
-cargo test test_fetch_uses_committed_offset
-```
-
-**Test coverage:**
-- 53 unit tests (storage, index, segment, partition, offsets)
-- 11 integration tests (end-to-end TCP protocol)
-- **64 total tests passing**
-
-## Performance Benchmarks
-
-```bash
-# Run read path benchmarks
-cargo bench --bench read_path
-
-# Results are saved to target/criterion/
-```
-
-**Key findings:**
-- **mmap reads: 2.5-3.9 GiB/s** (sealed segments)
-- **File I/O reads: 220-1024 MiB/s** (active segments)
-- **mmap is 10-18x faster** than file I/O for sequential reads
-- **Partition reads: 147 GiB/s** (multi-segment aggregation)
-
-See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for detailed analysis.
-
-## Documentation
-
-- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System design and component responsibilities
-- **[STORAGE.md](docs/STORAGE.md)** - Segment lifecycle, record format, index structure
-- **[PROTOCOL.md](docs/PROTOCOL.md)** - Binary protocol specification
-- **[OFFSETS.md](docs/OFFSETS.md)** - Consumer group offset management
-- **[PERFORMANCE.md](docs/PERFORMANCE.md)** - Benchmark results and analysis
-- **[LIMITATIONS.md](docs/LIMITATIONS.md)** - Known limitations and non-features
-
-## Project Structure
-
-```
-RustLog/
-├── src/
-│   ├── lib.rs              # Library entry point
-│   ├── main.rs             # Broker executable
-│   ├── error.rs            # Error types
-│   ├── broker/             # TCP server and connection handling
-│   │   ├── mod.rs
-│   │   ├── server.rs       # TCP listener
-│   │   └── connection.rs   # Per-connection handler
-│   ├── protocol/           # Wire protocol
-│   │   ├── mod.rs
-│   │   ├── frame.rs        # Length-prefixed framing
-│   │   ├── request.rs      # Request encoding/decoding
-│   │   └── response.rs     # Response encoding/decoding
-│   ├── storage/            # Log storage primitives
-│   │   ├── mod.rs
-│   │   ├── segment.rs      # Append-only log file
-│   │   ├── index.rs        # Offset → position mapping
-│   │   └── mmap.rs         # Memory-mapped read region
-│   ├── topics/             # Partition management
-│   │   ├── mod.rs
-│   │   └── partition.rs    # Multi-segment read orchestration
-│   └── offsets/            # Consumer offset tracking
-│       ├── mod.rs
-│       └── manager.rs      # In-memory offset storage
-├── tests/
-│   └── integration_test.rs # End-to-end broker tests
-├── benches/
-│   └── read_path.rs        # Storage read performance
-├── examples/
-│   └── simple_client.rs    # Example TCP client
-└── docs/                   # Detailed documentation
-```
+**RustLog is NOT Apache Kafka-compatible**. It uses a custom binary protocol and storage format designed for educational clarity rather than production compatibility.
 
 ## Design Philosophy
 
-RustLog prioritizes **clarity and correctness over features**:
+RustLog embodies specific design priorities:
 
-1. **Simple is better than complex** - Single broker, no distributed coordination
-2. **Explicit is better than implicit** - No auto-commit, consumer-driven offsets
-3. **Safe is better than fast** - mmap only for read-only sealed segments
-4. **Local is better than remote** - File-based storage, no network dependencies
-5. **Testable is better than clever** - Extensive unit and integration tests
+- **Determinism over throughput**: Synchronous processing ensures reproducible behavior
+- **Correctness over scale**: Single-node design eliminates distributed coordination bugs  
+- **Simplicity over features**: Constrained scope enables comprehensive understanding
+- **Testability over optimization**: 162 tests verify behavior under all conditions
 
-## Comparison with Apache Kafka
+These constraints enable guarantees impossible in distributed systems: deterministic failure modes, complete crash safety, and zero race conditions.
 
-| Feature | Kafka | RustLog |
-|---------|-------|---------|
-| Replication | Multi-replica with ISR | Single copy only |
-| Clustering | Multi-broker with ZooKeeper/KRaft | Single broker |
-| Offset Storage | Durable (internal topic) | In-memory only |
-| Retention | Time/size-based deletion | Manual management |
-| Compaction | Log compaction | Not implemented |
-| Security | SASL, SSL, ACLs | No security |
-| Protocol | Kafka wire protocol | Custom binary protocol |
-| Transactions | Exactly-once semantics | At-least-once only |
-| Zero-copy | sendfile() syscall | mmap for reads |
-| Consumer Groups | With rebalancing | Without rebalancing |
+### Explicit Non-Goals
 
-**RustLog is NOT a Kafka replacement. It's a learning tool and reference implementation.**
+RustLog intentionally excludes features that would compromise its educational value:
 
-## Contributing
+- **Replication or clustering**: No distributed coordination protocols
+- **Exactly-once semantics**: At-least-once delivery semantics only
+- **Background processing**: No async operations that introduce timing dependencies  
+- **Dynamic configuration**: All behavior determined at startup
+- **Multi-tenancy**: No authentication, authorization, or isolation beyond consumer groups
 
-This is an educational project. Contributions that improve clarity, fix bugs, or enhance documentation are welcome. New features should align with the project's scope (no clustering, no replication).
+## Core Capabilities
 
-## License
+**Append-Only Log Storage**
+- Sequential writes to immutable segment files
+- Memory-mapped reads with OS page cache optimization
+- Sparse indexing for O(log N) offset lookups
 
-MIT License - See LICENSE file for details.
+**Pull-Based Consumer Model**  
+- Consumers explicitly fetch data at their own pace
+- No broker-side backpressure or flow control complexity
+- Consumer group offset isolation
 
-## Acknowledgments
+**Crash-Safe Operations**
+- Atomic file operations with directory fsync
+- Automatic index rebuild after corruption detection
+- Deterministic recovery from any failure state
 
-Design inspired by:
-- Apache Kafka (log-structured storage)
-- Jay Kreps' "The Log" article
-- Martin Kleppmann's "Designing Data-Intensive Applications"
+**Incremental Log Compaction**
+- Copy-on-write deduplication by message key
+- Atomic segment replacement preserving offset semantics
+- Configurable compaction policies
 
-Implementation references:
-- Tokio async runtime
-- memmap2 for memory mapping
-- criterion for benchmarking
+**Index Rebuild & Corruption Recovery**
+- Automatic detection of index inconsistencies  
+- Deterministic index reconstruction from log segments
+- Zero data loss during corruption scenarios
 
----
+**Metrics-First Observability**
+- Lock-free counters and latency histograms
+- Consumer lag tracking and partition-level statistics
+- Prometheus-compatible metrics export
 
-**Built with Rust for learning and exploration.**
+## What RustLog Intentionally Does NOT Implement
+
+- Replication or distributed consensus (Raft, PBFT, etc.)
+- Consensus protocols for coordination or leadership election
+- Exactly-once delivery semantics or multi-partition transactions
+- Background async processing or non-deterministic timing behavior
+- Auto topic creation or dynamic partition assignment
+- Authentication, authorization, or access control mechanisms
+- Wire format compatibility with Apache Kafka or other message brokers
+- Schema evolution or payload validation
+- Multi-datacenter deployment or geographic distribution
+- Auto-scaling, load balancing, or dynamic resource management
+- Complex retention policies beyond time and size-based cleanup
+
+## Repository Structure
+
+```
+src/           Production-quality Rust implementation
+├── broker/    TCP server and connection handling
+├── storage/   Segment files, indexing, and crash recovery  
+├── topics/    Partition management and multi-segment reads
+├── offsets/   Consumer group state and isolation
+├── protocol/  Binary wire format and request routing
+├── admin/     Topic management and metadata operations
+├── metrics/   Lock-free observability subsystem
+└── bin/       Admin CLI tools
+
+docs/          Technical documentation for systems engineers
+├── ARCHITECTURE.md     System design and component interactions
+├── STORAGE.md          Log-structured storage and crash recovery  
+├── PROTOCOL.md         Binary wire format specification
+├── FAILURE_MODES.md    Comprehensive failure analysis
+└── DESIGN_DECISIONS.md Architecture rationale and tradeoffs
+
+tests/         162 comprehensive tests covering all failure modes
+├── integration_test.rs           Core produce/fetch functionality
+├── phase*_test.rs               Feature-specific test suites  
+├── test_minimal_isolation.rs    Consumer group isolation
+└── ...
+
+benches/       Performance benchmarks and analysis tools
+examples/      Reference client implementations
+```
+
+## How to Read This Codebase
+
+For systems engineers and interview preparation, follow this reading order:
+
+1. **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Start here for system overview, design principles, and module boundaries
+
+2. **[STORAGE.md](docs/STORAGE.md)** - Deep dive into log-structured storage, crash recovery, and memory mapping
+
+3. **[FAILURE_MODES.md](docs/FAILURE_MODES.md)** - Understand failure domains, recovery procedures, and operational characteristics
+
+4. **[DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md)** - Explore architectural tradeoffs and rejected alternatives
+
+5. **[PROTOCOL.md](docs/PROTOCOL.md)** - Review binary protocol specification and wire format details
+
+After reviewing documentation, examine the implementation:
+
+1. `src/broker/server.rs` - Request routing and connection handling
+2. `src/storage/segment.rs` - Core append-only storage implementation  
+3. `src/topics/partition.rs` - Multi-segment read coordination
+4. `tests/integration_test.rs` - End-to-end behavior verification
+
+## Quick Start
+
+**Build and run broker**:
+```bash
+cargo build --release
+./target/release/kafka-lite
+```
+
+**Run test suite** (162 tests):
+```bash
+cargo test
+```
+
+**Example client interactions**:
+```bash
+# See examples/ directory for:
+# - Producer sending records
+# - Consumer fetching with offsets  
+# - Admin topic management
+# - Metrics collection
+```
+
+## Project Status
+
+RustLog is a deliberately constrained, single-node log broker. The system is feature-complete by design. No new features will be added to the core system.
+
+The codebase demonstrates production-quality Rust implementations of:
+- Log-structured storage with crash safety
+- Memory-mapped I/O with sparse indexing  
+- Binary protocol design and parsing
+- Consumer group state management
+- Comprehensive failure mode testing
+- Lock-free metrics and observability
+
+RustLog serves as a reference for understanding distributed systems concepts, systems programming techniques, and the tradeoffs inherent in message broker design.
