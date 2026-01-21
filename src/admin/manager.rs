@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use crate::error::BrokerError;
+use crate::topics::partition::Partition;
 
 /// Metadata for a single partition.
 /// 
@@ -69,6 +70,7 @@ impl TopicMetadata {
 /// - Idempotent create (creating same topic twice is an error)
 pub struct AdminManager {
     topics: Arc<RwLock<HashMap<String, TopicMetadata>>>,
+    partitions: Arc<RwLock<HashMap<(String, u32), Arc<Partition>>>>,
 }
 
 impl AdminManager {
@@ -76,6 +78,15 @@ impl AdminManager {
     pub fn new() -> Self {
         Self {
             topics: Arc::new(RwLock::new(HashMap::new())),
+            partitions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Create a new admin manager that shares a partition registry.
+    pub fn with_partitions(partitions: Arc<RwLock<HashMap<(String, u32), Arc<Partition>>>>) -> Self {
+        Self {
+            topics: Arc::new(RwLock::new(HashMap::new())),
+            partitions,
         }
     }
 
@@ -102,6 +113,22 @@ impl AdminManager {
         }
 
         let metadata = TopicMetadata::new(name.clone(), partition_count);
+        
+        // Create actual partitions in the partition registry
+        {
+            let mut partitions = self.partitions.write()
+                .map_err(|_| BrokerError::LockPoisoned)?;
+            
+            for partition_id in 0..partition_count {
+                let partition_key = (name.clone(), partition_id);
+                
+                // Create a minimal in-memory partition for testing
+                // This is a placeholder until proper segment storage is implemented
+                let minimal_partition = create_in_memory_partition(partition_id);
+                partitions.insert(partition_key, Arc::new(minimal_partition));
+            }
+        }
+        
         topics.insert(name, metadata);
 
         Ok(())
@@ -169,6 +196,32 @@ impl AdminManager {
 impl Default for AdminManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Creates a minimal in-memory partition for development/testing.
+/// Uses temporary files for segments to avoid persistence issues.
+fn create_in_memory_partition(_partition_id: u32) -> Partition {
+    use tempfile::TempDir;
+    use crate::storage::{segment::Segment, index::Index};
+    use std::sync::Mutex;
+    
+    // Create empty segment and index using temporary files
+    let temp_dir = TempDir::new().unwrap();
+    let log_path = temp_dir.path().join("00000000000000000000.log");
+    let index_path = temp_dir.path().join("00000000000000000000.index");
+
+    let segment = Segment::open(&log_path, 0).unwrap();
+    let index = Index::open(&index_path, 0).unwrap();
+    
+    // Note: temp_dir is dropped here, but the file handles remain valid
+    // This works for testing but in production, proper directory management is needed
+    std::mem::forget(temp_dir); // Leak the temp dir to keep files alive
+    
+    Partition {
+        id: _partition_id,
+        sealed_segments: vec![],
+        active_segment: (Arc::new(Mutex::new(segment)), Arc::new(Mutex::new(index))),
     }
 }
 

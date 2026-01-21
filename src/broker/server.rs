@@ -1,5 +1,5 @@
 use crate::broker::connection::{self, PartitionRegistry};
-use crate::protocol::response::OffsetManagerRef;
+use crate::protocol::response::{OffsetManagerRef, AdminManagerRef};
 use tokio::net::TcpListener;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// - Direct task-per-connection is simpler and sufficient for MVP
 /// - Channels would add overhead without clear benefit
 /// - Future: if we need work-stealing or priority queues, reconsider
-pub async fn run(addr: &str, partitions: PartitionRegistry, offset_manager: OffsetManagerRef) -> anyhow::Result<()> {
+pub async fn run(addr: &str, partitions: PartitionRegistry, offset_manager: OffsetManagerRef, admin_manager: AdminManagerRef) -> anyhow::Result<()> {
     // Bind to address
     // This will fail fast if address is in use or invalid
     let listener = TcpListener::bind(addr).await?;
@@ -36,7 +36,7 @@ pub async fn run(addr: &str, partitions: PartitionRegistry, offset_manager: Offs
     println!("🚀 Broker listening on {}", local_addr);
     println!("   Protocol: binary, length-prefixed");
     println!("   Max frame size: 10MB");
-    println!("   Partitions loaded: {}", partitions.len());
+    println!("   Partitions loaded: {}", partitions.read().map(|p| p.len()).unwrap_or(0));
     println!();
     
     // Accept loop
@@ -51,12 +51,13 @@ pub async fn run(addr: &str, partitions: PartitionRegistry, offset_manager: Offs
         // This is cheap (just incrementing ref count)
         let partitions_clone = Arc::clone(&partitions);
         let offset_manager_clone = Arc::clone(&offset_manager);
+        let admin_manager_clone = Arc::clone(&admin_manager);
         
         // Spawn independent task for this connection
         // The task is detached: we don't await it
         // This allows the server to immediately accept the next connection
         tokio::spawn(async move {
-            if let Err(e) = connection::handle_connection(stream, partitions_clone, offset_manager_clone).await {
+            if let Err(e) = connection::handle_connection(stream, partitions_clone, offset_manager_clone, admin_manager_clone).await {
                 // Connection error (protocol violation, network error, etc.)
                 // Log and continue
                 // In production: structured logging (tracing crate)

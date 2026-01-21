@@ -11,16 +11,26 @@
 use kafka_lite::protocol::{frame, request::Request, response::Response};
 use kafka_lite::topics::partition::Partition;
 use kafka_lite::offsets::manager::OffsetManager;
+use kafka_lite::admin::manager::AdminManager;
 use tokio::net::TcpStream;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-fn empty_registry() -> Arc<HashMap<(String, u32), Arc<Partition>>> {
-    Arc::new(HashMap::new())
+fn empty_registry() -> Arc<RwLock<HashMap<(String, u32), Arc<Partition>>>> {
+    Arc::new(RwLock::new(HashMap::new()))
 }
 
 fn new_offset_manager() -> Arc<OffsetManager> {
     Arc::new(OffsetManager::new())
+}
+
+fn new_admin_manager() -> Arc<AdminManager> {
+    let partitions = empty_registry();
+    Arc::new(AdminManager::with_partitions(partitions))
+}
+
+fn new_admin_manager_with_partitions(partitions: Arc<RwLock<HashMap<(String, u32), Arc<Partition>>>>) -> Arc<AdminManager> {
+    Arc::new(AdminManager::with_partitions(partitions))
 }
 
 #[tokio::test]
@@ -31,6 +41,7 @@ async fn test_ping_pong() {
             "127.0.0.1:19092",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -66,12 +77,17 @@ async fn test_ping_pong() {
 
 #[tokio::test]
 async fn test_produce_request() {
-    // Start broker in background with empty partition registry
-    tokio::spawn(async {
+    // Create shared partition registry and admin manager
+    let partitions = empty_registry();
+    let admin = new_admin_manager_with_partitions(partitions.clone());
+    
+    // Start broker in background
+    tokio::spawn(async move {
         let _ = kafka_lite::broker::server::run(
             "127.0.0.1:19093",
-            empty_registry(),
+            partitions,
             new_offset_manager(),
+            admin,
         )
         .await;
     });
@@ -82,7 +98,30 @@ async fn test_produce_request() {
         .await
         .expect("failed to connect");
 
-    // Send Produce request
+    // First, create the topic
+    let create_request = Request::CreateTopic {
+        topic: "test-topic".to_string(),
+        partition_count: 1,
+    };
+    let create_bytes = create_request.encode();
+    frame::write_frame(&mut stream, &create_bytes)
+        .await
+        .expect("failed to write create topic frame");
+    
+    let create_response_bytes = frame::read_frame(&mut stream)
+        .await
+        .expect("failed to read create response");
+    let create_response = Response::decode(&create_response_bytes)
+        .expect("failed to decode create response");
+    
+    match create_response {
+        Response::CreateTopicResponse { success: true } => {
+            println!("✅ Topic created successfully");
+        }
+        _ => panic!("failed to create topic: {:?}", create_response),
+    }
+
+    // Now send Produce request
     let request = Request::Produce {
         topic: "test-topic".to_string(),
         partition: 0,
@@ -125,6 +164,7 @@ async fn test_fetch_request() {
             "127.0.0.1:19094",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -166,8 +206,8 @@ async fn test_fetch_request() {
         Response::Error { code, message } => {
             // Expected: partition not found (since registry is empty)
             println!("✅ Fetch returned expected error: code={}, message={}", code, message);
-            assert_eq!(code, 3); // Partition not found error
-            assert!(message.contains("Partition not found"));
+            assert_eq!(code, 10); // Topic or partition does not exist
+            assert!(message.contains("does not exist"));
         }
         _ => panic!("expected FetchResponse or Error, got {:?}", response),
     }
@@ -181,6 +221,7 @@ async fn test_commit_then_fetch_offset() {
             "127.0.0.1:19095",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -251,6 +292,7 @@ async fn test_fetch_without_commit_returns_none() {
             "127.0.0.1:19096",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -295,6 +337,7 @@ async fn test_overwrite_committed_offset() {
             "127.0.0.1:19097",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -366,6 +409,7 @@ async fn test_offsets_isolated_per_group() {
             "127.0.0.1:19098",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -461,6 +505,7 @@ async fn test_fetch_uses_committed_offset() {
             "127.0.0.1:19099",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -521,7 +566,7 @@ async fn test_fetch_uses_committed_offset() {
         Response::Error { code, message } => {
             // Expected: partition not found (empty registry)
             println!("✅ Fetch attempted from committed offset, partition not found: code={}, message={}", code, message);
-            assert_eq!(code, 3);
+            assert_eq!(code, 10);
         }
         _ => panic!("expected FetchResponse or Error, got {:?}", response),
     }
@@ -535,6 +580,7 @@ async fn test_fetch_without_commit_returns_empty() {
             "127.0.0.1:19100",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -588,6 +634,7 @@ async fn test_fetch_does_not_advance_offset() {
             "127.0.0.1:19101",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -668,6 +715,7 @@ async fn test_fetch_respects_max_bytes_from_committed() {
             "127.0.0.1:19102",
             empty_registry(),
             new_offset_manager(),
+            new_admin_manager(),
         )
         .await;
     });
@@ -724,7 +772,7 @@ async fn test_fetch_respects_max_bytes_from_committed() {
         Response::Error { code, .. } => {
             // Expected: partition not found
             println!("✅ Fetch respected max_bytes, partition not found: code={}", code);
-            assert_eq!(code, 3);
+            assert_eq!(code, 10);
         }
         _ => panic!("expected FetchResponse or Error, got {:?}", response),
     }

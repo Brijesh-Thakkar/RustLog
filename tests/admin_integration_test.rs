@@ -69,7 +69,7 @@ impl Drop for TestContext {
 async fn start_test_broker(addr: &str, _data_dir: std::path::PathBuf) -> anyhow::Result<()> {
     let partitions = Arc::new(RwLock::new(HashMap::new()));
     let offset_manager = Arc::new(OffsetManager::new());
-    let admin_manager = Arc::new(AdminManager::new());
+    let admin_manager = Arc::new(AdminManager::with_partitions(partitions.clone()));
 
     broker::server::run(addr, partitions, offset_manager, admin_manager).await
 }
@@ -78,7 +78,7 @@ async fn start_test_broker_on_port(port: u16) -> anyhow::Result<()> {
     let addr = format!("127.0.0.1:{}", port);
     let partitions = Arc::new(RwLock::new(HashMap::new()));
     let offset_manager = Arc::new(OffsetManager::new());
-    let admin_manager = Arc::new(AdminManager::new());
+    let admin_manager = Arc::new(AdminManager::with_partitions(partitions.clone()));
 
     broker::server::run(&addr, partitions, offset_manager, admin_manager).await
 }
@@ -194,11 +194,12 @@ async fn test_list_topics() {
     match response {
         Response::ListTopicsResponse { topics } => {
             assert_eq!(topics.len(), 2, "Expected 2 topics");
-            assert!(topics.contains(&"topic-a".to_string()), "Expected topic-a");
-            assert!(topics.contains(&"topic-b".to_string()), "Expected topic-b");
+            let topic_names: Vec<String> = topics.iter().map(|(name, _)| name.clone()).collect();
+            assert!(topic_names.contains(&"topic-a".to_string()), "Expected topic-a");
+            assert!(topic_names.contains(&"topic-b".to_string()), "Expected topic-b");
             // Verify sorted order
-            assert_eq!(topics[0], "topic-a");
-            assert_eq!(topics[1], "topic-b");
+            assert_eq!(topics[0].0, "topic-a");
+            assert_eq!(topics[1].0, "topic-b");
         }
         _ => panic!("Expected ListTopicsResponse"),
     }
@@ -231,6 +232,7 @@ async fn test_describe_topic() {
         Response::DescribeTopicResponse {
             topic,
             partition_count,
+            partitions: _,
         } => {
             assert_eq!(topic, "describe-me");
             assert_eq!(partition_count, 5);
@@ -290,11 +292,12 @@ async fn test_describe_partition() {
 
     match response {
         Response::DescribePartitionResponse {
+            topic: _,
             partition,
-            base_offset,
+            high_watermark,
         } => {
             assert_eq!(partition, 1);
-            assert_eq!(base_offset, 0, "New partition should have base_offset=0");
+            assert_eq!(high_watermark, 0, "New partition should have high_watermark=0");
         }
         _ => panic!("Expected DescribePartitionResponse"),
     }

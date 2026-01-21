@@ -37,4 +37,19 @@ pub enum BrokerError {
 
     #[error("offset out of range: requested {requested}, partition base {base}")]
     OffsetOutOfRange { requested: u64, base: u64 },
+
+    #[error("topic already exists: {0}")]
+    TopicAlreadyExists(String),
+
+    #[error("topic not found: {0}")]
+    TopicNotFound(String),
+
+    #[error("invalid partition count: {0}")]
+    InvalidPartitionCount(u32),
+
+    #[error("lock poisoned")]
+    LockPoisoned,
+
+    #[error("partition not found: topic {topic}, partition {partition}")]
+    PartitionNotFound { topic: String, partition: u32 },
 }

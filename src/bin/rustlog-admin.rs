@@ -184,6 +184,7 @@ async fn describe_topic(topic: &str) -> anyhow::Result<()> {
         Response::DescribeTopicResponse {
             topic,
             partition_count,
+            partitions,
         } => {
             let output = json!({
                 "status": "success",
@@ -223,14 +224,15 @@ async fn describe_partition(topic: &str, partition: u32) -> anyhow::Result<()> {
 
     match response {
         Response::DescribePartitionResponse {
+            topic: topic_name,
             partition,
-            base_offset,
+            high_watermark,
         } => {
             let output = json!({
                 "status": "success",
-                "topic": topic,
+                "topic": topic_name,
                 "partition": partition,
-                "base_offset": base_offset
+                "high_watermark": high_watermark
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
             Ok(())

@@ -1,8 +1,8 @@
 use crate::error::BrokerError;
-use crate::protocol::{frame, request::Request, response::{Response, OffsetManagerRef}};
+use crate::protocol::{frame, request::Request, response::{Response, OffsetManagerRef, AdminManagerRef}};
 use crate::topics::partition::Partition;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::net::TcpStream;
 
 /// Partition registry for the broker.
@@ -13,9 +13,9 @@ use tokio::net::TcpStream;
 /// - Replicated via Raft/ZooKeeper
 /// - Dynamically updated on topic creation
 /// 
-/// For MVP: we use a simple in-memory HashMap.
+/// For MVP: we use a simple in-memory RwLock<HashMap> to allow topic creation.
 /// Partitions are immutable once registered (no dynamic topic creation yet).
-pub type PartitionRegistry = Arc<HashMap<(String, u32), Arc<Partition>>>;
+pub type PartitionRegistry = Arc<RwLock<HashMap<(String, u32), Arc<Partition>>>>;
 
 /// Handle a single client connection.
 /// 
@@ -45,6 +45,7 @@ pub async fn handle_connection(
     mut stream: TcpStream,
     partitions: PartitionRegistry,
     offset_manager: OffsetManagerRef,
+    admin_manager: AdminManagerRef,
 ) -> Result<(), BrokerError> {
     loop {
         // 1. Read frame from network
@@ -87,7 +88,7 @@ pub async fn handle_connection(
         //    This now routes to actual partition storage for Fetch requests
         //    and offset manager for OffsetCommit/OffsetFetch requests.
         //    Produce is still stubbed (write path not in scope).
-        let response = Response::handle(request, &partitions, &offset_manager);
+        let response = Response::handle(request, &partitions, &offset_manager, &admin_manager);
 
         // 4. Encode response
         let response_bytes = response.encode();

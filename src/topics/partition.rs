@@ -1,7 +1,7 @@
 use crate::error::BrokerError;
 use crate::storage::segment::{Record, Segment};
 use crate::storage::index::Index;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Result of a fetch operation on a partition.
 /// 
@@ -53,11 +53,11 @@ pub struct Partition {
     /// Sealed segments with their indexes, ordered by base_offset ascending.
     /// These segments are immutable and safe to read concurrently.
     /// Indexes require &mut for seek, so wrapped in Mutex.
-    pub sealed_segments: Vec<(Arc<Segment>, Arc<std::sync::Mutex<Index>>)>,
+    pub sealed_segments: Vec<(Arc<Segment>, Arc<Mutex<Index>>)>,
     
     /// Active segment with its index (highest offsets).
-    /// Currently accepting writes (not implemented in this layer).
-    pub active_segment: (Arc<Segment>, Arc<std::sync::Mutex<Index>>),
+    /// Wrapped in Mutex to allow mutable access for appends.
+    pub active_segment: (Arc<Mutex<Segment>>, Arc<Mutex<Index>>),
 }
 
 impl Partition {
@@ -177,7 +177,10 @@ impl Partition {
         // 2. We've processed all sealed segments (or start_offset is in active range)
         let remaining_bytes = max_bytes.saturating_sub(accumulated_bytes);
         if remaining_bytes > 0 {
-            let active_base = self.active_segment.0.base_offset();
+            // Lock the active segment for reading
+            let active_segment_guard = self.active_segment.0.lock()
+                .map_err(|_| BrokerError::LockPoisoned)?;
+            let active_base = active_segment_guard.base_offset();
             
             // Determine where to start reading in active segment:
             // - If current_start_offset is within or past active segment: use it
@@ -188,7 +191,7 @@ impl Partition {
             // (i.e., active_start_offset is at or after the segment's base)
             if active_start_offset >= active_base {
                 // Read from active segment (no index needed, uses sequential scan)
-                let active_result = self.active_segment.0
+                let active_result = active_segment_guard
                     .read_active_from_offset(active_start_offset, remaining_bytes)
                     .map_err(|e| BrokerError::Storage(format!("failed to read active segment: {}", e)))?;
                 
@@ -224,7 +227,19 @@ impl Partition {
         self.sealed_segments
             .first()
             .map(|(seg, _idx)| seg.base_offset())
-            .unwrap_or_else(|| self.active_segment.0.base_offset())
+            .unwrap_or_else(|| {
+                self.active_segment.0.lock()
+                    .map(|seg| seg.base_offset())
+                    .unwrap_or(0)
+            })
+    }
+    
+    /// Append a record to the partition's active segment.
+    /// Returns the assigned offset for the record.
+    pub fn append(&self, payload: &[u8]) -> Result<u64, BrokerError> {
+        let mut segment = self.active_segment.0.lock()
+            .map_err(|_| BrokerError::LockPoisoned)?;
+        segment.append(payload)
     }
 }
 
@@ -241,7 +256,7 @@ mod tests {
     fn create_test_segment(
         base_offset: u64,
         records: Vec<Vec<u8>>,
-    ) -> (Arc<Segment>, Arc<std::sync::Mutex<Index>>, TempDir) {
+    ) -> (Arc<Segment>, Arc<Mutex<Index>>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let log_path = temp_dir.path().join(format!("{:020}.log", base_offset));
         let index_path = temp_dir.path().join(format!("{:020}.index", base_offset));
@@ -264,7 +279,21 @@ mod tests {
             segment.seal().unwrap();
         }
 
-        (Arc::new(segment), Arc::new(std::sync::Mutex::new(index)), temp_dir)
+        (Arc::new(segment), Arc::new(Mutex::new(index)), temp_dir)
+    }
+    
+    /// Helper to create an active (mutable) segment for testing.
+    fn create_active_segment(
+        base_offset: u64,
+    ) -> (Arc<Mutex<Segment>>, Arc<Mutex<Index>>, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let log_path = temp_dir.path().join(format!("{:020}.log", base_offset));
+        let index_path = temp_dir.path().join(format!("{:020}.index", base_offset));
+
+        let segment = Segment::open(&log_path, base_offset).unwrap();
+        let index = Index::open(&index_path, base_offset).unwrap();
+
+        (Arc::new(Mutex::new(segment)), Arc::new(Mutex::new(index)), temp_dir)
     }
 
     #[test]
@@ -276,7 +305,7 @@ mod tests {
         );
 
         // Create a partition with one sealed segment and a dummy active segment
-        let (active_segment, active_index, _active_temp_dir) = create_test_segment(103, vec![]);
+        let (active_segment, active_index, _active_temp_dir) = create_active_segment(103);
 
         let partition = Partition {
             id: 0,
@@ -317,7 +346,7 @@ mod tests {
         );
 
         // Create partition
-        let (active_segment, active_index, _active_temp) = create_test_segment(400, vec![]);
+        let (active_segment, active_index, _active_temp) = create_active_segment(400);
 
         let partition = Partition {
             id: 0,
@@ -358,7 +387,7 @@ mod tests {
             vec![b"CCCC".to_vec(), b"DDDD".to_vec()],  // 4 bytes each
         );
 
-        let (active_segment, active_index, _active_temp) = create_test_segment(300, vec![]);
+        let (active_segment, active_index, _active_temp) = create_active_segment(300);
 
         let partition = Partition {
             id: 0,
@@ -394,7 +423,7 @@ mod tests {
             vec![b"record0".to_vec()],
         );
 
-        let (active_segment, active_index, _active_temp) = create_test_segment(101, vec![]);
+        let (active_segment, active_index, _active_temp) = create_active_segment(101);
 
         let partition = Partition {
             id: 0,
@@ -429,7 +458,7 @@ mod tests {
             vec![b"seg2_rec0".to_vec(), b"seg2_rec1".to_vec()],
         );
 
-        let (active_segment, active_index, _active_temp) = create_test_segment(300, vec![]);
+        let (active_segment, active_index, _active_temp) = create_active_segment(300);
 
         let partition = Partition {
             id: 0,
@@ -464,7 +493,7 @@ mod tests {
             ],
         );
 
-        let (active_segment, active_index, _active_temp) = create_test_segment(105, vec![]);
+        let (active_segment, active_index, _active_temp) = create_active_segment(105);
 
         let partition = Partition {
             id: 0,
@@ -503,7 +532,7 @@ mod tests {
         let partition = Partition {
             id: 0,
             sealed_segments: vec![],
-            active_segment: (Arc::new(segment), Arc::new(std::sync::Mutex::new(index))),
+            active_segment: (Arc::new(Mutex::new(segment)), Arc::new(Mutex::new(index))),
         };
 
         // Fetch from offset 0 - should now read from active segment
@@ -541,7 +570,7 @@ mod tests {
         let partition = Partition {
             id: 0,
             sealed_segments: vec![(sealed_seg, sealed_idx)],
-            active_segment: (Arc::new(active_seg), Arc::new(std::sync::Mutex::new(active_idx))),
+            active_segment: (Arc::new(Mutex::new(active_seg)), Arc::new(Mutex::new(active_idx))),
         };
 
         // Fetch from offset 100 with large max_bytes
@@ -588,7 +617,7 @@ mod tests {
         let partition = Partition {
             id: 0,
             sealed_segments: vec![(seg1, idx1), (seg2, idx2)],
-            active_segment: (Arc::new(active_seg), Arc::new(std::sync::Mutex::new(active_idx))),
+            active_segment: (Arc::new(Mutex::new(active_seg)), Arc::new(Mutex::new(active_idx))),
         };
 
         // Fetch all records
@@ -629,7 +658,7 @@ mod tests {
         let partition = Partition {
             id: 0,
             sealed_segments: vec![(sealed_seg, sealed_idx)],
-            active_segment: (Arc::new(active_seg), Arc::new(std::sync::Mutex::new(active_idx))),
+            active_segment: (Arc::new(Mutex::new(active_seg)), Arc::new(Mutex::new(active_idx))),
         };
 
         // Each record is 16 bytes (4 + 8 + 4)
@@ -668,7 +697,7 @@ mod tests {
         let partition = Partition {
             id: 0,
             sealed_segments: vec![(seg1, idx1)],
-            active_segment: (Arc::new(active_seg), Arc::new(std::sync::Mutex::new(active_idx))),
+            active_segment: (Arc::new(Mutex::new(active_seg)), Arc::new(Mutex::new(active_idx))),
         };
 
         // Fetch starting at offset 200 (start of active segment)
@@ -707,7 +736,7 @@ mod tests {
         let partition = Partition {
             id: 0,
             sealed_segments: vec![(seg1, idx1)],
-            active_segment: (Arc::new(active_seg), Arc::new(std::sync::Mutex::new(active_idx))),
+            active_segment: (Arc::new(Mutex::new(active_seg)), Arc::new(Mutex::new(active_idx))),
         };
 
         // Fetch from offset 300 (after all segments)

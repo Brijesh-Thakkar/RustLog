@@ -79,6 +79,29 @@ pub enum Request {
         partition: u32,
     },
 
+    /// Create a new topic.
+    CreateTopic {
+        topic: String,
+        partition_count: u32,
+    },
+
+    /// List all topics.
+    ListTopics,
+
+    /// Describe a topic.
+    DescribeTopic {
+        topic: String,
+    },
+
+    /// Describe a partition.
+    DescribePartition {
+        topic: String,
+        partition: u32,
+    },
+
+    /// Fetch metrics from the broker.
+    MetricsFetch,
+
     /// Simple health check request.
     Ping,
 }
@@ -100,6 +123,11 @@ impl Request {
             0x02 => Self::decode_fetch(payload),
             0x03 => Self::decode_offset_commit(payload),
             0x04 => Self::decode_offset_fetch(payload),
+            0x05 => Self::decode_create_topic(payload),
+            0x06 => Ok(Request::ListTopics),
+            0x07 => Self::decode_describe_topic(payload),
+            0x08 => Self::decode_describe_partition(payload),
+            0x09 => Ok(Request::MetricsFetch),
             0xFF => Ok(Request::Ping),
             _ => Err(BrokerError::UnknownRequestType(request_type)),
         }
@@ -362,6 +390,44 @@ impl Request {
                 buf
             }
             Request::Ping => vec![0xFF],
+            Request::CreateTopic { topic, partition_count } => {
+                let mut buf = Vec::new();
+                buf.push(0x05); // request type for CreateTopic
+                
+                // Topic
+                buf.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+                buf.extend_from_slice(topic.as_bytes());
+                
+                // Number of partitions
+                buf.extend_from_slice(&partition_count.to_be_bytes());
+                
+                buf
+            }
+            Request::ListTopics => vec![0x06], // request type for ListTopics
+            Request::DescribeTopic { topic } => {
+                let mut buf = Vec::new();
+                buf.push(0x07); // request type for DescribeTopic
+                
+                // Topic
+                buf.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+                buf.extend_from_slice(topic.as_bytes());
+                
+                buf
+            }
+            Request::DescribePartition { topic, partition } => {
+                let mut buf = Vec::new();
+                buf.push(0x08); // request type for DescribePartition
+                
+                // Topic
+                buf.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+                buf.extend_from_slice(topic.as_bytes());
+                
+                // Partition
+                buf.extend_from_slice(&partition.to_be_bytes());
+                
+                buf
+            }
+            Request::MetricsFetch => vec![0x09], // request type for MetricsFetch
         }
     }
 
@@ -478,6 +544,87 @@ impl Request {
             topic,
             partition,
         })
+    }
+
+    fn decode_create_topic(buf: &[u8]) -> Result<Self, BrokerError> {
+        let mut offset = 0;
+
+        // Read topic
+        if buf.len() < offset + 2 {
+            return Err(BrokerError::DecodeError("missing topic length".to_string()));
+        }
+        let topic_len = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
+        offset += 2;
+
+        if buf.len() < offset + topic_len {
+            return Err(BrokerError::DecodeError("truncated topic".to_string()));
+        }
+        let topic = String::from_utf8(buf[offset..offset + topic_len].to_vec())
+            .map_err(|e| BrokerError::DecodeError(format!("invalid utf8 topic: {}", e)))?;
+        offset += topic_len;
+
+        // Read partition count
+        if buf.len() < offset + 4 {
+            return Err(BrokerError::DecodeError("missing partition count".to_string()));
+        }
+        let partition_count = u32::from_be_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]);
+
+        Ok(Request::CreateTopic { topic, partition_count })
+    }
+
+    fn decode_describe_topic(buf: &[u8]) -> Result<Self, BrokerError> {
+        let mut offset = 0;
+
+        // Read topic
+        if buf.len() < offset + 2 {
+            return Err(BrokerError::DecodeError("missing topic length".to_string()));
+        }
+        let topic_len = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
+        offset += 2;
+
+        if buf.len() < offset + topic_len {
+            return Err(BrokerError::DecodeError("truncated topic".to_string()));
+        }
+        let topic = String::from_utf8(buf[offset..offset + topic_len].to_vec())
+            .map_err(|e| BrokerError::DecodeError(format!("invalid utf8 topic: {}", e)))?;
+
+        Ok(Request::DescribeTopic { topic })
+    }
+
+    fn decode_describe_partition(buf: &[u8]) -> Result<Self, BrokerError> {
+        let mut offset = 0;
+
+        // Read topic
+        if buf.len() < offset + 2 {
+            return Err(BrokerError::DecodeError("missing topic length".to_string()));
+        }
+        let topic_len = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
+        offset += 2;
+
+        if buf.len() < offset + topic_len {
+            return Err(BrokerError::DecodeError("truncated topic".to_string()));
+        }
+        let topic = String::from_utf8(buf[offset..offset + topic_len].to_vec())
+            .map_err(|e| BrokerError::DecodeError(format!("invalid utf8 topic: {}", e)))?;
+        offset += topic_len;
+
+        // Read partition
+        if buf.len() < offset + 4 {
+            return Err(BrokerError::DecodeError("missing partition".to_string()));
+        }
+        let partition = u32::from_be_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]);
+
+        Ok(Request::DescribePartition { topic, partition })
     }
 }
 
